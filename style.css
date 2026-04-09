@@ -298,19 +298,8 @@ kbd {
   color: var(--cyan-light);
 }
 
-.result-value.reward {
-  color: var(--green);
-}
-
 .result-value.high-score-val {
   color: var(--green);
-}
-
-.reward-row {
-  background: rgba(16, 185, 129, 0.08);
-  border-radius: 8px;
-  padding: 4px 8px;
-  margin: -2px -8px;
 }
 
 /* ── New‐high‐score badge ── */
@@ -380,3 +369,4 @@ kbd {
   backdrop-filter: blur(12px);
   align-self: center;
 }
+
