@@ -16,11 +16,15 @@ const ENTRY_FEE      = 100;
 const INIT_BALANCE   = 10000;
 const GEN_AHEAD      = 1600;
 const CLEANUP_BEH    = 800;
-const REWARD_PER_SCORE = 0.15;
 const MAX_GAP        = 310;      // never exceed reachable distance
-const STAR_SPAWN_CHANCE = 0.45;
+const POWERUP_SPAWN_CHANCE = 0.08; // rare power-ups
 const SHAKE_DURATION = 20;
 const SHAKE_MAG      = 8;
+const BACKWARD_LIMIT = 120;       // max px player can move backward
+const SHORT_PRESS_MS = 150;       // short press threshold for low jump
+const DOUBLE_CLICK_MS = 300;      // window for double-click detection
+const LOW_JUMP_VEL   = JUMP_VEL * 0.55; // low jump velocity
+const INST_VANISH_TIME = 8;       // frames for instant planet to vanish
 
 // ── Mutable state ──────────────────────────────────────────────
 let balance      = INIT_BALANCE;
@@ -31,12 +35,18 @@ let maxDistX     = 0;
 let frames       = 0;
 let rafId        = null;
 let highScore    = parseInt(localStorage.getItem('ph_highScore') || '0', 10);
-let earnedReward = 0;
 let shakeFrames  = 0;
 let deathTimer   = 0;
 let isNewHigh    = false;
 let comboCount   = 0;
 let lastLandedId = null;
+let playerMaxX   = 0;              // for backward movement restriction
+let playerShield = false;          // shield power-up active
+let playerImmunity = 0;            // immunity frames remaining
+let jumpHeld     = false;          // is jump key/touch currently held
+let jumpPressTime = 0;             // timestamp of last jump press
+let lastJumpPressTime = 0;         // for double-click detection
+let doubleJumpQueued = false;      // double-click triggered double jump
 
 // ── Canvas ─────────────────────────────────────────────────────
 const canvas = document.getElementById('gameCanvas');
@@ -162,13 +172,14 @@ function makePlanet(x, isStart) {
 }
 
 // ══════════════════════════════════════════════════════════════
-// COLLECTIBLE STAR FACTORY
+// POWER-UP FACTORY
 // ══════════════════════════════════════════════════════════════
-function makeCollectible(x, y) {
+function makePowerUp(x, y) {
+  const type = Math.random() < 0.5 ? 'shield' : 'immunity';
   return {
     x, y,
-    r: 12,
-    value: 25 + Math.floor(Math.random() * 26),
+    r: 14,
+    type,
     phase: Math.random() * Math.PI * 2,
     alive: true,
   };
@@ -203,6 +214,13 @@ function initPlanets() {
   lastLandedId      = sp.id;
   shakeFrames       = 0;
   deathTimer        = 0;
+  playerMaxX        = player.x;
+  playerShield      = false;
+  playerImmunity    = 0;
+  jumpHeld          = false;
+  jumpPressTime     = 0;
+  lastJumpPressTime = 0;
+  doubleJumpQueued  = false;
 
   genX = sp.x + sp.w;
   while (genX < canvas.width + GEN_AHEAD) spawnNext();
@@ -241,11 +259,11 @@ function spawnNext() {
     });
   }
 
-  // Collectible star between planets
-  if (Math.random() < STAR_SPAWN_CHANCE) {
+  // Rare power-up between planets
+  if (Math.random() < POWERUP_SPAWN_CHANCE) {
     const midX = last.x + last.w + gap * (0.3 + Math.random() * 0.4);
     const midY = Math.min(last.y, planets[planets.length - 1].y) - 40 - Math.random() * 80;
-    collectibles.push(makeCollectible(midX, Math.max(60, midY)));
+    collectibles.push(makePowerUp(midX, Math.max(60, midY)));
   }
 }
 
@@ -298,8 +316,9 @@ function thrustPuff(x, y) {
   });
 }
 
-function collectBurst(x, y) {
-  const colors = ['#fbbf24', '#fde68a', '#ffffff'];
+function collectBurst(x, y, burstColor) {
+  const defColors = ['#fbbf24', '#fde68a', '#ffffff'];
+  const colors = burstColor ? [burstColor, '#ffffff', burstColor] : defColors;
   for (let i = 0; i < 10; i++) {
     const a = Math.PI * 2 * i / 10;
     const s = Math.random() * 3 + 1;
@@ -344,18 +363,22 @@ function updatePlanets() {
     }
 
     if (p.type === 'temporary' && p.landed && p.alive) {
-      p.landTimer++;
-      if (p.landTimer >= p.duration) {
-        p.alive = false;
-        if (player.onPlanet === p) player.onPlanet = null;
-      } else if (p.duration - p.landTimer < 50) {
-        p.opacity = 0.28 + 0.72 * Math.abs(Math.sin(p.landTimer * 0.35));
+      if (playerImmunity > 0 && player.onPlanet === p) {
+        // Immunity: pause temporary planet countdown
+      } else {
+        p.landTimer++;
+        if (p.landTimer >= p.duration) {
+          p.alive = false;
+          if (player.onPlanet === p) player.onPlanet = null;
+        } else if (p.duration - p.landTimer < 50) {
+          p.opacity = 0.28 + 0.72 * Math.abs(Math.sin(p.landTimer * 0.35));
+        }
       }
     }
 
     if (p.type === 'instant' && p.instActive) {
       p.instTimer--;
-      p.opacity = Math.max(0, p.instTimer / 30);
+      p.opacity = Math.max(0, p.instTimer / INST_VANISH_TIME);
       if (p.instTimer <= 0) {
         p.alive = false;
         if (player.onPlanet === p) player.onPlanet = null;
@@ -379,22 +402,26 @@ function updatePlayer() {
     player.y += p.y - p.py;
   }
 
-  // Jump (ground jump or double jump)
+  // Jump (ground jump with variable height, double jump only on double-click)
   if (jumpQueued && player.jumpCD <= 0) {
     if (player.onPlanet && player.onPlanet.alive) {
-      // Ground jump
+      // Ground jump – always start at full velocity; short press cuts it later
       player.vy = JUMP_VEL;
-      player.jumpsLeft = 1;  // one more jump available mid-air
+      player.jumpsLeft = 1;  // one more jump available mid-air via double-click
       burst(player.x + player.w / 2, player.y + player.h, '#38bdf8', 6);
       const lp = player.onPlanet;
       if (lp.type === 'instant' && !lp.instActive) {
         lp.instActive = true;
-        lp.instTimer  = 30;
+        lp.instTimer  = INST_VANISH_TIME;
       }
       player.onPlanet = null;
       player.jumpCD   = 6;
-    } else if (!player.onPlanet && player.jumpsLeft > 0) {
-      // Double jump (mid-air)
+    }
+    // No automatic mid-air jump on single press
+  }
+  // Double-click triggered double jump (mid-air only)
+  if (doubleJumpQueued && player.jumpCD <= 0) {
+    if (!player.onPlanet && player.jumpsLeft > 0) {
       player.vy = DOUBLE_JUMP_VEL;
       player.jumpsLeft--;
       burst(player.x + player.w / 2, player.y + player.h, '#a78bfa', 5);
@@ -402,6 +429,7 @@ function updatePlayer() {
     }
   }
   jumpQueued = false;
+  doubleJumpQueued = false;
   if (player.jumpCD > 0) player.jumpCD--;
 
   // Horizontal movement (left AND right)
@@ -421,6 +449,16 @@ function updatePlayer() {
   // Integrate
   player.x += player.vx;
   player.y += player.vy;
+
+  // ── Forward progression restriction ────────────────────────
+  if (player.x > playerMaxX) playerMaxX = player.x;
+  if (player.x < playerMaxX - BACKWARD_LIMIT) {
+    player.x = playerMaxX - BACKWARD_LIMIT;
+    if (player.vx < 0) player.vx = 0;
+  }
+
+  // ── Decrement immunity timer ───────────────────────────────
+  if (playerImmunity > 0) playerImmunity--;
 
   // ── Landing detection ──────────────────────────────────────
   const prevOnPlanet = player.onPlanet;
@@ -452,7 +490,7 @@ function updatePlayer() {
           }
           if (p.type === 'instant' && !p.instActive) {
             p.instActive = true;
-            p.instTimer  = 30;
+            p.instTimer  = INST_VANISH_TIME;
             burst(player.x + player.w / 2, p.y, p.color, 12);
           }
 
@@ -475,7 +513,7 @@ function updatePlayer() {
     }
   }
 
-  // ── Collectible pickup ─────────────────────────────────────
+  // ── Power-up pickup ─────────────────────────────────────────
   const pcx = player.x + player.w / 2;
   const pcy = player.y + player.h / 2;
   for (const c of collectibles) {
@@ -484,9 +522,15 @@ function updatePlayer() {
     const dy = pcy - c.y;
     if (dx * dx + dy * dy < (c.r + 14) * (c.r + 14)) {
       c.alive = false;
-      score += c.value;
-      collectBurst(c.x, c.y);
-      addScorePopup(c.x, c.y - 10, `+${c.value}`, '#fbbf24');
+      if (c.type === 'shield') {
+        playerShield = true;
+        collectBurst(c.x, c.y, '#0ea5e9');
+        addScorePopup(c.x, c.y - 10, '🛡 SHIELD', '#0ea5e9');
+      } else if (c.type === 'immunity') {
+        playerImmunity = 300; // ~5 seconds at 60fps
+        collectBurst(c.x, c.y, '#10b981');
+        addScorePopup(c.x, c.y - 10, '✨ IMMUNITY', '#10b981');
+      }
     }
   }
   collectibles = collectibles.filter(c => c.alive || c.x > cam.x - CLEANUP_BEH);
@@ -507,6 +551,7 @@ function updatePlayer() {
 function updateObstacles() {
   const t = performance.now() / 1000;
   for (const o of obstacles) {
+    if (!o.alive) continue;
     o.x     = o.bx + Math.sin(t * o.speed) * o.range;
     o.angle  = (o.angle || 0) + 0.04;
 
@@ -514,9 +559,17 @@ function updateObstacles() {
       player.x + 5, player.y + 5, player.w - 10, player.h - 10,
       o.x, o.y, o.w, o.h
     )) {
-      triggerDeath();
+      if (playerShield) {
+        playerShield = false;
+        burst(player.x + player.w / 2, player.y + player.h / 2, '#0ea5e9', 12);
+        addScorePopup(player.x + player.w / 2, player.y - 20, '🛡 BLOCKED!', '#0ea5e9');
+        o.alive = false;
+      } else {
+        triggerDeath();
+      }
     }
   }
+  obstacles = obstacles.filter(o => o.alive);
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -634,7 +687,7 @@ function render() {
   ctx.translate(-cam.x, -cam.y);
 
   for (const p of planets)   drawPlanet(p, t);
-  for (const o of obstacles) drawObstacle(o);
+  for (const o of obstacles) if (o.alive) drawObstacle(o);
   for (const c of collectibles) {
     if (c.alive) drawCollectible(c, t);
   }
@@ -749,51 +802,36 @@ function drawPlanet(p, t) {
   ctx.globalAlpha = 1;
 }
 
-// ── Draw collectible star ──────────────────────────────────────
+// ── Draw power-up ──────────────────────────────────────────────
 function drawCollectible(c, t) {
   const bobY = c.y + Math.sin(t * 3 + c.phase) * 5;
-  const rot  = t * 2.5 + c.phase;
   const pulseR = c.r + Math.sin(t * 4 + c.phase) * 2;
+  const color = c.type === 'shield' ? '#0ea5e9' : '#10b981';
+  const icon  = c.type === 'shield' ? '🛡' : '✨';
 
   // Glow
-  ctx.globalAlpha = 0.3;
-  ctx.fillStyle   = '#fbbf24';
+  ctx.globalAlpha = 0.35;
+  ctx.fillStyle   = color;
   ctx.beginPath();
-  ctx.arc(c.x, bobY, pulseR * 2, 0, Math.PI * 2);
+  ctx.arc(c.x, bobY, pulseR * 2.2, 0, Math.PI * 2);
   ctx.fill();
 
-  // Star shape
+  // Outer ring
+  ctx.globalAlpha = 0.7;
+  ctx.strokeStyle = color;
+  ctx.lineWidth   = 2;
+  ctx.beginPath();
+  ctx.arc(c.x, bobY, pulseR + 4, 0, Math.PI * 2);
+  ctx.stroke();
+
+  // Icon
   ctx.globalAlpha = 1;
-  ctx.save();
-  ctx.translate(c.x, bobY);
-  ctx.rotate(rot);
+  ctx.font        = `${Math.round(pulseR * 1.6)}px sans-serif`;
+  ctx.textAlign   = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(icon, c.x, bobY);
+  ctx.textBaseline = 'alphabetic';
 
-  ctx.fillStyle   = '#fbbf24';
-  ctx.shadowBlur  = 10;
-  ctx.shadowColor = '#fbbf24';
-  ctx.beginPath();
-  for (let i = 0; i < 5; i++) {
-    const outerA = Math.PI * 2 * i / 5 - Math.PI / 2;
-    const innerA = outerA + Math.PI / 5;
-    const ox = Math.cos(outerA) * pulseR;
-    const oy = Math.sin(outerA) * pulseR;
-    const ix = Math.cos(innerA) * pulseR * 0.45;
-    const iy = Math.sin(innerA) * pulseR * 0.45;
-    if (i === 0) ctx.moveTo(ox, oy);
-    else         ctx.lineTo(ox, oy);
-    ctx.lineTo(ix, iy);
-  }
-  ctx.closePath();
-  ctx.fill();
-  ctx.shadowBlur = 0;
-
-  // Inner highlight
-  ctx.fillStyle = 'rgba(255,255,255,0.35)';
-  ctx.beginPath();
-  ctx.arc(0, -pulseR * 0.15, pulseR * 0.3, 0, Math.PI * 2);
-  ctx.fill();
-
-  ctx.restore();
   ctx.globalAlpha = 1;
 }
 
@@ -922,6 +960,31 @@ function drawRocket(t) {
     ctx.setLineDash([]);
   }
 
+  // Shield indicator
+  if (playerShield) {
+    ctx.strokeStyle = 'rgba(14, 165, 233, 0.6)';
+    ctx.lineWidth   = 2;
+    ctx.beginPath();
+    ctx.arc(0, h * 0.5, w * 0.9, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.fillStyle = 'rgba(14, 165, 233, 0.08)';
+    ctx.beginPath();
+    ctx.arc(0, h * 0.5, w * 0.9, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // Immunity indicator
+  if (playerImmunity > 0) {
+    const immAlpha = playerImmunity < 60 ? 0.15 + 0.35 * Math.abs(Math.sin(t * 8)) : 0.25;
+    ctx.strokeStyle = `rgba(16, 185, 129, ${immAlpha + 0.3})`;
+    ctx.lineWidth   = 1.5;
+    ctx.setLineDash([5, 3]);
+    ctx.beginPath();
+    ctx.arc(0, h * 0.5, w * 1.1, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
+
   ctx.restore();
 }
 
@@ -995,10 +1058,6 @@ function triggerDeath() {
   // Death explosion
   deathBurst(player.x + player.w / 2, player.y + player.h / 2);
 
-  // Calculate reward
-  earnedReward = Math.floor(finalScore * REWARD_PER_SCORE);
-  balance += earnedReward;
-
   // Update high score
   isNewHigh = finalScore > highScore;
   if (isNewHigh) {
@@ -1013,7 +1072,6 @@ function showGameOver() {
 
   document.getElementById('finalScore').textContent = finalScore.toLocaleString();
   document.getElementById('goBalance').textContent  = fmtBalance(balance);
-  document.getElementById('goReward').textContent   = `+${earnedReward.toLocaleString()} $STARS`;
 
   const hsEl = document.getElementById('goHighScore');
   hsEl.textContent = highScore.toLocaleString();
@@ -1055,7 +1113,17 @@ function refreshUI() {
 window.addEventListener('keydown', function(e) {
   if (e.code === 'Space' || e.key === ' ' || e.code === 'KeyW' || e.code === 'ArrowUp') {
     e.preventDefault();
-    if (gameState === 'playing') jumpQueued = true;
+    if (gameState === 'playing' && !jumpHeld) {
+      const now = Date.now();
+      // Double-click detection for double jump
+      if (!player.onPlanet && player.jumpsLeft > 0 && now - lastJumpPressTime < DOUBLE_CLICK_MS) {
+        doubleJumpQueued = true;
+      }
+      jumpQueued = true;
+      jumpHeld = true;
+      jumpPressTime = now;
+      lastJumpPressTime = now;
+    }
   }
   if (e.code === 'KeyD' || e.code === 'ArrowRight') {
     e.preventDefault();
@@ -1070,6 +1138,13 @@ window.addEventListener('keydown', function(e) {
 window.addEventListener('keyup', function(e) {
   if (e.code === 'KeyD' || e.code === 'ArrowRight') moveRight = false;
   if (e.code === 'KeyA' || e.code === 'ArrowLeft')  moveLeft  = false;
+  if (e.code === 'Space' || e.key === ' ' || e.code === 'KeyW' || e.code === 'ArrowUp') {
+    jumpHeld = false;
+    // Short press: cut upward velocity for low jump
+    if (gameState === 'playing' && Date.now() - jumpPressTime < SHORT_PRESS_MS && player.vy < 0) {
+      player.vy *= 0.5;
+    }
+  }
 });
 
 // ══════════════════════════════════════════════════════════════
@@ -1083,11 +1158,20 @@ canvas.addEventListener('touchstart', function(e) {
   e.preventDefault();
   for (let i = 0; i < e.changedTouches.length; i++) {
     const touch = e.changedTouches[i];
-    if (touch.clientY < canvas.height * 0.4) {
-      // Top area = jump
+    if (touch.clientY < canvas.height * 0.4 || (touch.clientX >= canvas.width * 0.4 && touch.clientX <= canvas.width * 0.6)) {
+      // Top area or middle area = jump
       if (touchJump === null) {
         touchJump = touch.identifier;
-        if (gameState === 'playing') jumpQueued = true;
+        if (gameState === 'playing') {
+          const now = Date.now();
+          if (!player.onPlanet && player.jumpsLeft > 0 && now - lastJumpPressTime < DOUBLE_CLICK_MS) {
+            doubleJumpQueued = true;
+          }
+          jumpQueued = true;
+          jumpHeld = true;
+          jumpPressTime = now;
+          lastJumpPressTime = now;
+        }
       }
     } else if (touch.clientX > canvas.width * 0.6) {
       // Right area = move right
@@ -1101,12 +1185,6 @@ canvas.addEventListener('touchstart', function(e) {
         touchLeft = touch.identifier;
         if (gameState === 'playing') moveLeft = true;
       }
-    } else {
-      // Middle area = jump
-      if (touchJump === null) {
-        touchJump = touch.identifier;
-        if (gameState === 'playing') jumpQueued = true;
-      }
     }
   }
 }, { passive: false });
@@ -1117,7 +1195,14 @@ canvas.addEventListener('touchend', function(e) {
     const touch = e.changedTouches[i];
     if (touch.identifier === touchRight) { touchRight = null; moveRight = false; }
     if (touch.identifier === touchLeft)  { touchLeft  = null; moveLeft  = false; }
-    if (touch.identifier === touchJump)  { touchJump  = null; }
+    if (touch.identifier === touchJump) {
+      touchJump = null;
+      jumpHeld = false;
+      // Short press: cut upward velocity for low jump
+      if (gameState === 'playing' && Date.now() - jumpPressTime < SHORT_PRESS_MS && player.vy < 0) {
+        player.vy *= 0.5;
+      }
+    }
   }
 }, { passive: false });
 
@@ -1127,6 +1212,7 @@ canvas.addEventListener('touchcancel', function(e) {
   touchJump  = null;
   moveRight  = false;
   moveLeft   = false;
+  jumpHeld   = false;
 }, { passive: false });
 
 // ══════════════════════════════════════════════════════════════
@@ -1189,3 +1275,4 @@ initStars();
 refreshUI();
 gameState = 'menu';
 rafId = requestAnimationFrame(bgLoop);
+
