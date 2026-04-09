@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+  <title>Planet Hopper</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+  <!-- Game canvas -->
+  <canvas id="gameCanvas"></canvas>
+
+  <!-- ── MENU SCREEN ── -->
+  <div id="menuScreen" class="overlay">
+    <div class="panel">
+
+      <div class="logo">
+        <span class="logo-icon">🚀</span>
+        <h1>Planet Hopper</h1>
+        <p class="tagline">Hop across the cosmos</p>
+      </div>
+
+      <div class="stats-row">
+        <div class="stat-card">
+          <span class="stat-label">Balance</span>
+          <span class="stat-value" id="menuBalance">10,000 $STARS</span>
+        </div>
+        <div class="stat-card accent">
+          <span class="stat-label">Entry Fee</span>
+          <span class="stat-value entry">100 $STARS</span>
+        </div>
+      </div>
+
+      <div class="controls-hint">
+        <div class="hint-desktop">
+          <span><kbd>SPACE</kbd> Jump</span>
+          <span><kbd>D</kbd> / <kbd>→</kbd> Move right</span>
+        </div>
+        <div class="hint-mobile">
+          <span>Tap <strong>right side</strong> → Move right</span>
+          <span>Tap <strong>anywhere else</strong> → Jump</span>
+        </div>
+      </div>
+
+      <button class="btn-primary" id="playBtn">
+        <span class="btn-label">▶ PLAY</span>
+        <span class="btn-sub">−100 $STARS</span>
+      </button>
+
+    </div>
+  </div>
+
+  <!-- ── HUD ── -->
+  <div id="hud" class="hidden">
+    <div class="hud-score">
+      <span class="hud-label">SCORE</span>
+      <span class="hud-value" id="hudScore">0</span>
+    </div>
+    <div class="hud-balance" id="hudBalance">10,000 $STARS</div>
+  </div>
+
+  <!-- ── GAME OVER SCREEN ── -->
+  <div id="gameOverScreen" class="overlay hidden">
+    <div class="panel">
+
+      <div class="go-icon">💥</div>
+      <h2 class="go-title">GAME OVER</h2>
+
+      <div class="results">
+        <div class="result-row">
+          <span class="result-label">Final Score</span>
+          <span class="result-value" id="finalScore">0</span>
+        </div>
+        <div class="result-row">
+          <span class="result-label">Balance</span>
+          <span class="result-value" id="goBalance">9,900 $STARS</span>
+        </div>
+      </div>
+
+      <div class="btn-group">
+        <button class="btn-primary" id="restartBtn">
+          <span class="btn-label">▶ PLAY AGAIN</span>
+          <span class="btn-sub">−100 $STARS</span>
+        </button>
+        <button class="btn-secondary" id="menuBtn">Back to Menu</button>
+      </div>
+
+    </div>
+  </div>
+
+  <script src="script.js"></script>
+</body>
+</html>
