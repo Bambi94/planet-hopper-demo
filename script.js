@@ -22,7 +22,7 @@ const SHAKE_DURATION = 20;
 const SHAKE_MAG      = 8;
 const BACKWARD_LIMIT = 120;       // max px player can move backward
 const SHORT_PRESS_MS = 150;       // short press threshold for low jump
-const DOUBLE_CLICK_MS = 300;      // window for double-click detection
+// (double-click timing removed – second jump allowed any time while airborne)
 const LOW_JUMP_CUT   = 0.5;         // multiply vy by this for short-press low jump
 const INST_VANISH_TIME = 8;       // frames for instant planet to vanish
 
@@ -45,8 +45,7 @@ let playerShield = false;          // shield power-up active
 let playerImmunity = 0;            // immunity frames remaining
 let jumpHeld     = false;          // is jump key/touch currently held
 let jumpPressTime = 0;             // timestamp of last jump press
-let lastJumpPressTime = 0;         // for double-click detection
-let doubleJumpQueued = false;      // double-click triggered double jump
+// (lastJumpPressTime and doubleJumpQueued removed – no longer needed)
 
 // ── Canvas ─────────────────────────────────────────────────────
 const canvas = document.getElementById('gameCanvas');
@@ -219,8 +218,6 @@ function initPlanets() {
   playerImmunity    = 0;
   jumpHeld          = false;
   jumpPressTime     = 0;
-  lastJumpPressTime = 0;
-  doubleJumpQueued  = false;
 
   genX = sp.x + sp.w;
   while (genX < canvas.width + GEN_AHEAD) spawnNext();
@@ -402,12 +399,12 @@ function updatePlayer() {
     player.y += p.y - p.py;
   }
 
-  // Jump (ground jump with variable height, double jump only on double-click)
+  // Jump (ground jump or mid-air second jump, both via single press)
   if (jumpQueued && player.jumpCD <= 0) {
     if (player.onPlanet && player.onPlanet.alive) {
       // Ground jump – always start at full velocity; short press cuts it later
       player.vy = JUMP_VEL;
-      player.jumpsLeft = 1;  // one more jump available mid-air via double-click
+      player.jumpsLeft = 1;  // one more jump available mid-air
       burst(player.x + player.w / 2, player.y + player.h, '#38bdf8', 6);
       const lp = player.onPlanet;
       if (lp.type === 'instant' && !lp.instActive) {
@@ -416,12 +413,8 @@ function updatePlayer() {
       }
       player.onPlanet = null;
       player.jumpCD   = 6;
-    }
-    // No automatic mid-air jump on single press
-  }
-  // Double-click triggered double jump (mid-air only)
-  if (doubleJumpQueued && player.jumpCD <= 0) {
-    if (!player.onPlanet && player.jumpsLeft > 0) {
+    } else if (!player.onPlanet && player.jumpsLeft > 0) {
+      // Mid-air second jump (allowed any time while airborne)
       player.vy = DOUBLE_JUMP_VEL;
       player.jumpsLeft--;
       burst(player.x + player.w / 2, player.y + player.h, '#a78bfa', 5);
@@ -429,7 +422,6 @@ function updatePlayer() {
     }
   }
   jumpQueued = false;
-  doubleJumpQueued = false;
   if (player.jumpCD > 0) player.jumpCD--;
 
   // Horizontal movement (left AND right)
@@ -1114,15 +1106,9 @@ window.addEventListener('keydown', function(e) {
   if (e.code === 'Space' || e.key === ' ' || e.code === 'KeyW' || e.code === 'ArrowUp') {
     e.preventDefault();
     if (gameState === 'playing' && !jumpHeld) {
-      const now = Date.now();
-      // Double-click detection for double jump
-      if (!player.onPlanet && player.jumpsLeft > 0 && now - lastJumpPressTime < DOUBLE_CLICK_MS) {
-        doubleJumpQueued = true;
-      }
       jumpQueued = true;
       jumpHeld = true;
-      jumpPressTime = now;
-      lastJumpPressTime = now;
+      jumpPressTime = Date.now();
     }
   }
   if (e.code === 'KeyD' || e.code === 'ArrowRight') {
@@ -1163,14 +1149,9 @@ canvas.addEventListener('touchstart', function(e) {
       if (touchJump === null) {
         touchJump = touch.identifier;
         if (gameState === 'playing') {
-          const now = Date.now();
-          if (!player.onPlanet && player.jumpsLeft > 0 && now - lastJumpPressTime < DOUBLE_CLICK_MS) {
-            doubleJumpQueued = true;
-          }
           jumpQueued = true;
           jumpHeld = true;
-          jumpPressTime = now;
-          lastJumpPressTime = now;
+          jumpPressTime = Date.now();
         }
       }
     } else if (touch.clientX > canvas.width * 0.6) {
