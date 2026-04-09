@@ -23,7 +23,7 @@ const SHAKE_MAG      = 8;
 const BACKWARD_LIMIT = 120;       // max px player can move backward
 const SHORT_PRESS_MS = 150;       // short press threshold for low jump
 const DOUBLE_CLICK_MS = 300;      // window for double-click detection
-const LOW_JUMP_VEL   = JUMP_VEL * 0.55; // low jump velocity
+const LOW_JUMP_CUT   = 0.5;         // multiply vy by this for short-press low jump
 const INST_VANISH_TIME = 8;       // frames for instant planet to vanish
 
 // ── Mutable state ──────────────────────────────────────────────
@@ -1142,7 +1142,7 @@ window.addEventListener('keyup', function(e) {
     jumpHeld = false;
     // Short press: cut upward velocity for low jump
     if (gameState === 'playing' && Date.now() - jumpPressTime < SHORT_PRESS_MS && player.vy < 0) {
-      player.vy *= 0.5;
+      player.vy *= LOW_JUMP_CUT;
     }
   }
 });
@@ -1200,7 +1200,7 @@ canvas.addEventListener('touchend', function(e) {
       jumpHeld = false;
       // Short press: cut upward velocity for low jump
       if (gameState === 'playing' && Date.now() - jumpPressTime < SHORT_PRESS_MS && player.vy < 0) {
-        player.vy *= 0.5;
+        player.vy *= LOW_JUMP_CUT;
       }
     }
   }
