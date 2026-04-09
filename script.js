@@ -6,24 +6,36 @@
 'use strict';
 
 // ── Constants ──────────────────────────────────────────────────
-const GRAVITY      = 0.42;
-const JUMP_VEL     = -13.5;
-const MOVE_SPEED   = 5.5;
-const MAX_FALL     = 16;
-const CAM_LERP     = 0.07;
-const ENTRY_FEE    = 100;
-const INIT_BALANCE = 10000;
-const GEN_AHEAD    = 1600;    // pixels ahead of view to generate
-const CLEANUP_BEH  = 800;     // pixels behind view to keep
+const GRAVITY        = 0.42;
+const JUMP_VEL       = -13.5;
+const DOUBLE_JUMP_VEL = -12;
+const MOVE_SPEED     = 5.5;
+const MAX_FALL       = 16;
+const CAM_LERP       = 0.07;
+const ENTRY_FEE      = 100;
+const INIT_BALANCE   = 10000;
+const GEN_AHEAD      = 1600;
+const CLEANUP_BEH    = 800;
+const REWARD_PER_SCORE = 0.15;
+const MAX_GAP        = 310;      // never exceed reachable distance
+const STAR_SPAWN_CHANCE = 0.45;
+const SHAKE_DURATION = 20;
+const SHAKE_MAG      = 8;
 
 // ── Mutable state ──────────────────────────────────────────────
-let balance    = INIT_BALANCE;
-let gameState  = 'menu';   // 'menu' | 'playing' | 'gameover'
-let score      = 0;
-let finalScore = 0;
-let maxDistX   = 0;
-let frames     = 0;
-let rafId      = null;
+let balance      = INIT_BALANCE;
+let gameState    = 'menu';
+let score        = 0;
+let finalScore   = 0;
+let maxDistX     = 0;
+let frames       = 0;
+let rafId        = null;
+let highScore    = parseInt(localStorage.getItem('ph_highScore') || '0', 10);
+let earnedReward = 0;
+let shakeFrames  = 0;
+let deathTimer   = 0;
+let comboCount   = 0;
+let lastLandedId = null;
 
 // ── Canvas ─────────────────────────────────────────────────────
 const canvas = document.getElementById('gameCanvas');
@@ -41,8 +53,9 @@ const player = {
   x: 0, y: 0,
   vx: 0, vy: 0,
   w: 28, h: 46,
-  onPlanet: null,   // reference to landed planet or null
-  jumpCD: 0,        // cooldown frames after jumping
+  onPlanet: null,
+  jumpCD: 0,
+  jumpsLeft: 2,
   alive: true,
 };
 
@@ -50,15 +63,18 @@ const player = {
 const cam = { x: 0, y: 0 };
 
 // ── World collections ──────────────────────────────────────────
-let planets   = [];
-let obstacles = [];
-let particles = [];
-let bgStars   = [];
-let genX      = 0;   // rightmost x from which next planet will spawn
-let startX    = 0;   // player starting x (for distance calculation)
+let planets     = [];
+let obstacles   = [];
+let particles   = [];
+let bgStars     = [];
+let collectibles = [];
+let scorePopups = [];
+let genX        = 0;
+let startX      = 0;
 
 // ── Input ──────────────────────────────────────────────────────
 let moveRight  = false;
+let moveLeft   = false;
 let jumpQueued = false;
 
 // ══════════════════════════════════════════════════════════════
@@ -72,7 +88,7 @@ function initStars() {
       y:     Math.random() * canvas.height,
       r:     Math.random() * 1.6 + 0.3,
       alpha: Math.random() * 0.55 + 0.18,
-      speed: Math.random() * 0.22 + 0.04,  // parallax factor
+      speed: Math.random() * 0.22 + 0.04,
       phase: Math.random() * Math.PI * 2,
       color: Math.random() < 0.25 ? '#a78bfa'
            : Math.random() < 0.5  ? '#38bdf8'
@@ -103,16 +119,15 @@ function makePlanet(x, isStart) {
   isStart = isStart || false;
   const d      = isStart ? 0 : getDiff(x);
   const midY   = canvas.height * 0.5;
-  const minW   = Math.max(55, 150 - d * 10);
-  const maxW   = Math.max(85, 200 - d * 8);
+  const minW   = Math.max(65, 150 - d * 8);
+  const maxW   = Math.max(95, 200 - d * 7);
   const w      = Math.round(Math.random() * (maxW - minW) + minW);
   const h      = 17 + Math.random() * 10;
-  const spread = Math.min(280, 55 + d * 28);
+  const spread = Math.min(220, 50 + d * 20);
   let   y      = isStart ? midY - h / 2
                          : midY + (Math.random() - 0.5) * spread * 2 - h / 2;
   y = Math.max(90, Math.min(canvas.height - 130, y));
 
-  // Type
   let type = 'permanent';
   if (!isStart && d >= 1) {
     const r = Math.random();
@@ -120,15 +135,14 @@ function makePlanet(x, isStart) {
     else if (d >= 2 && r < 0.28) type = 'temporary';
   }
 
-  // Moving?
   const moveChance = isStart ? 0 : Math.min(0.55, d * 0.065);
   const moving = Math.random() < moveChance;
 
   return {
     id:      Math.random(),
     x, y, w, h,
-    bx: x, by: y,       // base positions for oscillation
-    px: x, py: y,       // previous-frame positions (for delta)
+    bx: x, by: y,
+    px: x, py: y,
     type,
     color:   planetColor(type, x),
     moving,
@@ -136,16 +150,26 @@ function makePlanet(x, isStart) {
     mSpeed:  (Math.random() * 1.2 + 0.4) * (Math.random() < 0.5 ? 1 : -1),
     mRange:  50 + Math.random() * 70,
     mPhase:  Math.random() * Math.PI * 2,
-    // Temporary-type fields
     landed:    false,
     landTimer: 0,
     duration:  type === 'temporary' ? (1.5 + Math.random() * 1.5) * 60 : 0,
-    // Instant-type fields
     instActive: false,
     instTimer:  0,
-    // Common
     opacity:   1,
     alive:     true,
+  };
+}
+
+// ══════════════════════════════════════════════════════════════
+// COLLECTIBLE STAR FACTORY
+// ══════════════════════════════════════════════════════════════
+function makeCollectible(x, y) {
+  return {
+    x, y,
+    r: 12,
+    value: 25 + Math.floor(Math.random() * 26),
+    phase: Math.random() * Math.PI * 2,
+    alive: true,
   };
 }
 
@@ -153,24 +177,31 @@ function makePlanet(x, isStart) {
 // PLANET INITIALIZATION
 // ══════════════════════════════════════════════════════════════
 function initPlanets() {
-  planets   = [];
-  obstacles = [];
+  planets      = [];
+  obstacles    = [];
+  collectibles = [];
+  scorePopups  = [];
 
   const sp = makePlanet(100, true);
   sp.w = 220;
   planets.push(sp);
 
   startX = sp.x + sp.w / 2;
-  player.x        = sp.x + sp.w / 2 - player.w / 2;
-  player.y        = sp.y - player.h;
-  player.vx       = 0;
-  player.vy       = 0;
-  player.onPlanet = sp;
-  player.jumpCD   = 0;
-  player.alive    = true;
-  maxDistX        = 0;
-  frames          = 0;
-  score           = 0;
+  player.x          = sp.x + sp.w / 2 - player.w / 2;
+  player.y          = sp.y - player.h;
+  player.vx         = 0;
+  player.vy         = 0;
+  player.onPlanet   = sp;
+  player.jumpCD     = 0;
+  player.jumpsLeft  = 2;
+  player.alive      = true;
+  maxDistX          = 0;
+  frames            = 0;
+  score             = 0;
+  comboCount        = 0;
+  lastLandedId      = sp.id;
+  shakeFrames       = 0;
+  deathTimer        = 0;
 
   genX = sp.x + sp.w;
   while (genX < canvas.width + GEN_AHEAD) spawnNext();
@@ -180,12 +211,12 @@ function initPlanets() {
 }
 
 // ══════════════════════════════════════════════════════════════
-// SPAWN NEXT PLANET (and maybe obstacle)
+// SPAWN NEXT PLANET (and maybe obstacle / collectible)
 // ══════════════════════════════════════════════════════════════
 function spawnNext() {
   const d    = getDiff(genX);
-  const minG = 70  + d * 28;
-  const maxG = 160 + d * 36;
+  const minG = 70  + d * 18;
+  const maxG = Math.min(MAX_GAP, 140 + d * 22);
   const gap  = Math.random() * (maxG - minG) + minG;
   const last = planets[planets.length - 1];
   const x    = last.x + last.w + gap;
@@ -207,6 +238,13 @@ function spawnNext() {
       angle: 0,
       alive: true,
     });
+  }
+
+  // Collectible star between planets
+  if (Math.random() < STAR_SPAWN_CHANCE) {
+    const midX = last.x + last.w + gap * (0.3 + Math.random() * 0.4);
+    const midY = Math.min(last.y, planets[planets.length - 1].y) - 40 - Math.random() * 80;
+    collectibles.push(makeCollectible(midX, Math.max(60, midY)));
   }
 }
 
@@ -230,6 +268,23 @@ function burst(x, y, color, n) {
   }
 }
 
+function deathBurst(x, y) {
+  const colors = ['#ef4444', '#f97316', '#fbbf24', '#f87171', '#ffffff'];
+  for (let i = 0; i < 30; i++) {
+    const a = Math.PI * 2 * Math.random();
+    const s = Math.random() * 5 + 1.5;
+    particles.push({
+      x, y,
+      vx: Math.cos(a) * s,
+      vy: Math.sin(a) * s - 2,
+      life:    40 + Math.random() * 30,
+      maxLife: 70,
+      r:       Math.random() * 4 + 2,
+      color:   colors[Math.floor(Math.random() * colors.length)],
+    });
+  }
+}
+
 function thrustPuff(x, y) {
   particles.push({
     x: x + Math.random() * player.w,
@@ -242,6 +297,33 @@ function thrustPuff(x, y) {
   });
 }
 
+function collectBurst(x, y) {
+  const colors = ['#fbbf24', '#fde68a', '#ffffff'];
+  for (let i = 0; i < 10; i++) {
+    const a = Math.PI * 2 * i / 10;
+    const s = Math.random() * 3 + 1;
+    particles.push({
+      x, y,
+      vx: Math.cos(a) * s,
+      vy: Math.sin(a) * s - 1,
+      life:    20 + Math.random() * 10,
+      maxLife: 30,
+      r:       Math.random() * 2.5 + 1,
+      color:   colors[Math.floor(Math.random() * colors.length)],
+    });
+  }
+}
+
+// ══════════════════════════════════════════════════════════════
+// SCORE POPUPS
+// ══════════════════════════════════════════════════════════════
+function addScorePopup(x, y, text, color) {
+  scorePopups.push({
+    x, y, text, color: color || '#fbbf24',
+    life: 60, maxLife: 60,
+  });
+}
+
 // ══════════════════════════════════════════════════════════════
 // UPDATE – PLANETS
 // ══════════════════════════════════════════════════════════════
@@ -249,11 +331,9 @@ function updatePlanets() {
   const t = performance.now() / 1000;
 
   for (const p of planets) {
-    // Save previous position for delta
     p.px = p.x;
     p.py = p.y;
 
-    // Oscillation
     if (p.moving && p.alive) {
       if (p.mAxis === 'y') {
         p.y = p.by + Math.sin(t * Math.abs(p.mSpeed) + p.mPhase) * p.mRange;
@@ -262,7 +342,6 @@ function updatePlanets() {
       }
     }
 
-    // Temporary countdown
     if (p.type === 'temporary' && p.landed && p.alive) {
       p.landTimer++;
       if (p.landTimer >= p.duration) {
@@ -273,7 +352,6 @@ function updatePlanets() {
       }
     }
 
-    // Instant fade countdown
     if (p.type === 'instant' && p.instActive) {
       p.instTimer--;
       p.opacity = Math.max(0, p.instTimer / 30);
@@ -284,7 +362,6 @@ function updatePlanets() {
     }
   }
 
-  // Remove fully invisible dead planets (keep fading instant ones)
   planets = planets.filter(p => p.alive || p.opacity > 0);
 }
 
@@ -301,25 +378,36 @@ function updatePlayer() {
     player.y += p.y - p.py;
   }
 
-  // Jump (only allowed when on a live platform)
-  if (jumpQueued && player.onPlanet && player.onPlanet.alive && player.jumpCD <= 0) {
-    player.vy = JUMP_VEL;
-    burst(player.x + player.w / 2, player.y + player.h, '#38bdf8', 6);
-    // Instant platform: begin fade after player jumps off
-    const lp = player.onPlanet;
-    if (lp.type === 'instant' && !lp.instActive) {
-      lp.instActive = true;
-      lp.instTimer  = 30;
+  // Jump (ground jump or double jump)
+  if (jumpQueued && player.jumpCD <= 0) {
+    if (player.onPlanet && player.onPlanet.alive) {
+      // Ground jump
+      player.vy = JUMP_VEL;
+      player.jumpsLeft = 1;  // one more jump available mid-air
+      burst(player.x + player.w / 2, player.y + player.h, '#38bdf8', 6);
+      const lp = player.onPlanet;
+      if (lp.type === 'instant' && !lp.instActive) {
+        lp.instActive = true;
+        lp.instTimer  = 30;
+      }
+      player.onPlanet = null;
+      player.jumpCD   = 6;
+    } else if (!player.onPlanet && player.jumpsLeft > 0) {
+      // Double jump (mid-air)
+      player.vy = DOUBLE_JUMP_VEL;
+      player.jumpsLeft--;
+      burst(player.x + player.w / 2, player.y + player.h, '#a78bfa', 5);
+      player.jumpCD = 6;
     }
-    player.onPlanet = null;
-    player.jumpCD   = 6;
   }
   jumpQueued = false;
   if (player.jumpCD > 0) player.jumpCD--;
 
-  // Horizontal force (right only; natural drag when released)
-  if (moveRight) {
+  // Horizontal movement (left AND right)
+  if (moveRight && !moveLeft) {
     player.vx = Math.min(player.vx + 1.1, MOVE_SPEED);
+  } else if (moveLeft && !moveRight) {
+    player.vx = Math.max(player.vx - 1.1, -MOVE_SPEED * 0.7);
   } else {
     player.vx *= player.onPlanet ? 0.55 : 0.965;
   }
@@ -351,6 +439,7 @@ function updatePlayer() {
 
         player.y  = p.y - player.h;
         player.vy = 0;
+        player.jumpsLeft = 2;
 
         // First contact with this planet
         if (prevOnPlanet !== p) {
@@ -362,8 +451,20 @@ function updatePlayer() {
           }
           if (p.type === 'instant' && !p.instActive) {
             p.instActive = true;
-            p.instTimer  = 30;  // ~0.5 s to escape
+            p.instTimer  = 30;
             burst(player.x + player.w / 2, p.y, p.color, 12);
+          }
+
+          // Combo tracking
+          if (lastLandedId !== p.id) {
+            comboCount++;
+            lastLandedId = p.id;
+            if (comboCount > 1 && comboCount % 5 === 0) {
+              const bonus = comboCount * 5;
+              score += bonus;
+              addScorePopup(player.x + player.w / 2, player.y - 20,
+                            `${comboCount}x COMBO +${bonus}`, '#38bdf8');
+            }
           }
         }
 
@@ -373,11 +474,27 @@ function updatePlayer() {
     }
   }
 
+  // ── Collectible pickup ─────────────────────────────────────
+  const pcx = player.x + player.w / 2;
+  const pcy = player.y + player.h / 2;
+  for (const c of collectibles) {
+    if (!c.alive) continue;
+    const dx = pcx - c.x;
+    const dy = pcy - c.y;
+    if (dx * dx + dy * dy < (c.r + 14) * (c.r + 14)) {
+      c.alive = false;
+      score += c.value;
+      collectBurst(c.x, c.y);
+      addScorePopup(c.x, c.y - 10, `+${c.value}`, '#fbbf24');
+    }
+  }
+  collectibles = collectibles.filter(c => c.alive || c.x > cam.x - CLEANUP_BEH);
+
   // ── Track max distance & update score ─────────────────────
   const dist = player.x - startX;
   if (dist > maxDistX) maxDistX = dist;
   frames++;
-  score = Math.floor(Math.max(0, maxDistX) / 8 + frames * 0.04);
+  score = Math.max(score, Math.floor(Math.max(0, maxDistX) / 8 + frames * 0.04));
 
   // ── Death conditions ───────────────────────────────────────
   if (player.y > canvas.height + 250) triggerDeath();
@@ -415,6 +532,17 @@ function updateParticles() {
 }
 
 // ══════════════════════════════════════════════════════════════
+// UPDATE – SCORE POPUPS
+// ══════════════════════════════════════════════════════════════
+function updateScorePopups() {
+  for (const p of scorePopups) {
+    p.y -= 0.8;
+    p.life--;
+  }
+  scorePopups = scorePopups.filter(p => p.life > 0);
+}
+
+// ══════════════════════════════════════════════════════════════
 // UPDATE – CAMERA
 // ══════════════════════════════════════════════════════════════
 function updateCamera() {
@@ -435,6 +563,9 @@ function maybeGenerate() {
   }
   if (obstacles.length > 30) {
     obstacles = obstacles.filter(o => o.bx > cam.x - CLEANUP_BEH);
+  }
+  if (collectibles.length > 40) {
+    collectibles = collectibles.filter(c => c.x > cam.x - CLEANUP_BEH);
   }
 }
 
@@ -464,23 +595,35 @@ function render() {
   const H = canvas.height;
   const t = performance.now() / 1000;
 
+  // Screen shake
+  let sx = 0, sy = 0;
+  if (shakeFrames > 0) {
+    const intensity = shakeFrames / SHAKE_DURATION;
+    sx = (Math.random() - 0.5) * SHAKE_MAG * intensity;
+    sy = (Math.random() - 0.5) * SHAKE_MAG * intensity;
+    shakeFrames--;
+  }
+
+  ctx.save();
+  ctx.translate(sx, sy);
+
   // Background
   ctx.fillStyle = '#020212';
   ctx.fillRect(0, 0, W, H);
 
-  // Nebula blobs (screen-space, purely decorative depth)
+  // Nebula blobs
   drawNebula(W * 0.18, H * 0.28, 220, '#6d28d9', 0.065);
   drawNebula(W * 0.72, H * 0.62, 170, '#0ea5e9', 0.052);
   drawNebula(W * 0.50, H * 0.10, 140, '#10b981', 0.040);
 
   // Stars with parallax + twinkle
   for (const s of bgStars) {
-    const sx = ((s.x - cam.x * s.speed) % W + W) % W;
-    const sy = s.y;
+    const starX = ((s.x - cam.x * s.speed) % W + W) % W;
+    const starY = s.y;
     ctx.globalAlpha = s.alpha * (0.55 + 0.45 * Math.sin(t * 1.9 + s.phase));
     ctx.fillStyle   = s.color;
     ctx.beginPath();
-    ctx.arc(sx, sy, s.r, 0, Math.PI * 2);
+    ctx.arc(starX, starY, s.r, 0, Math.PI * 2);
     ctx.fill();
   }
   ctx.globalAlpha = 1;
@@ -491,6 +634,9 @@ function render() {
 
   for (const p of planets)   drawPlanet(p, t);
   for (const o of obstacles) drawObstacle(o);
+  for (const c of collectibles) {
+    if (c.alive) drawCollectible(c, t);
+  }
 
   // Particles
   for (const pt of particles) {
@@ -503,9 +649,21 @@ function render() {
   }
   ctx.globalAlpha = 1;
 
+  // Score popups
+  for (const p of scorePopups) {
+    const a = p.life / p.maxLife;
+    ctx.globalAlpha = a;
+    ctx.fillStyle   = p.color;
+    ctx.font        = 'bold 14px "Segoe UI", system-ui, sans-serif';
+    ctx.textAlign   = 'center';
+    ctx.fillText(p.text, p.x, p.y);
+  }
+  ctx.globalAlpha = 1;
+
   if (player.alive) drawRocket(t);
 
-  ctx.restore();
+  ctx.restore(); // world transform
+  ctx.restore(); // screen shake
 }
 
 // ── Draw nebula ────────────────────────────────────────────────
@@ -566,7 +724,7 @@ function drawPlanet(p, t) {
     ctx.setLineDash([]);
   }
 
-  // Temporary: countdown arc (red, shrinks toward expiry)
+  // Temporary: countdown arc
   if (p.type === 'temporary' && p.landed && p.duration > 0) {
     const frac = 1 - p.landTimer / p.duration;
     ctx.strokeStyle = frac < 0.3 ? '#f87171' : '#fbbf24';
@@ -587,6 +745,54 @@ function drawPlanet(p, t) {
     ctx.fillText('⚡', cx, p.y - 6);
   }
 
+  ctx.globalAlpha = 1;
+}
+
+// ── Draw collectible star ──────────────────────────────────────
+function drawCollectible(c, t) {
+  const bobY = c.y + Math.sin(t * 3 + c.phase) * 5;
+  const rot  = t * 2.5 + c.phase;
+  const pulseR = c.r + Math.sin(t * 4 + c.phase) * 2;
+
+  // Glow
+  ctx.globalAlpha = 0.3;
+  ctx.fillStyle   = '#fbbf24';
+  ctx.beginPath();
+  ctx.arc(c.x, bobY, pulseR * 2, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Star shape
+  ctx.globalAlpha = 1;
+  ctx.save();
+  ctx.translate(c.x, bobY);
+  ctx.rotate(rot);
+
+  ctx.fillStyle   = '#fbbf24';
+  ctx.shadowBlur  = 10;
+  ctx.shadowColor = '#fbbf24';
+  ctx.beginPath();
+  for (let i = 0; i < 5; i++) {
+    const outerA = Math.PI * 2 * i / 5 - Math.PI / 2;
+    const innerA = outerA + Math.PI / 5;
+    const ox = Math.cos(outerA) * pulseR;
+    const oy = Math.sin(outerA) * pulseR;
+    const ix = Math.cos(innerA) * pulseR * 0.45;
+    const iy = Math.sin(innerA) * pulseR * 0.45;
+    if (i === 0) ctx.moveTo(ox, oy);
+    else         ctx.lineTo(ox, oy);
+    ctx.lineTo(ix, iy);
+  }
+  ctx.closePath();
+  ctx.fill();
+  ctx.shadowBlur = 0;
+
+  // Inner highlight
+  ctx.fillStyle = 'rgba(255,255,255,0.35)';
+  ctx.beginPath();
+  ctx.arc(0, -pulseR * 0.15, pulseR * 0.3, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.restore();
   ctx.globalAlpha = 1;
 }
 
@@ -627,8 +833,12 @@ function drawRocket(t) {
   ctx.save();
   ctx.translate(cx, player.y + h);
 
-  // Thrust flame (when pressing right or airborne)
-  if (moveRight || !player.onPlanet) {
+  // Tilt rocket based on horizontal velocity
+  const tiltAngle = player.vx * 0.04;
+  ctx.rotate(tiltAngle);
+
+  // Thrust flame
+  if (moveRight || moveLeft || !player.onPlanet) {
     const fl = 11 + Math.sin(t * 22) * 5;
     const fg = ctx.createLinearGradient(0, 0, 0, fl);
     fg.addColorStop(0,   '#fde68a');
@@ -645,7 +855,6 @@ function drawRocket(t) {
     if (Math.random() < 0.38) thrustPuff(player.x, player.y + h);
   }
 
-  // Translate to top-left of rocket
   ctx.translate(0, -h);
 
   // Nozzle
@@ -670,7 +879,7 @@ function drawRocket(t) {
   ctx.closePath();
   ctx.fill();
 
-  // Porthole / window
+  // Porthole
   ctx.fillStyle   = '#bae6fd';
   ctx.shadowBlur  = 6;
   ctx.shadowColor = '#38bdf8';
@@ -701,6 +910,17 @@ function drawRocket(t) {
   ctx.closePath();
   ctx.fill();
 
+  // Double-jump indicator (small ring around rocket when jump available mid-air)
+  if (!player.onPlanet && player.jumpsLeft > 0) {
+    ctx.strokeStyle = 'rgba(167, 139, 250, 0.5)';
+    ctx.lineWidth   = 1.5;
+    ctx.setLineDash([3, 3]);
+    ctx.beginPath();
+    ctx.arc(0, h * 0.5, w * 0.7, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
+
   ctx.restore();
 }
 
@@ -708,10 +928,26 @@ function drawRocket(t) {
 // GAME LOOP
 // ══════════════════════════════════════════════════════════════
 function gameLoop() {
+  if (gameState === 'dying') {
+    // Continue rendering during death animation
+    deathTimer++;
+    updateParticles();
+    updateScorePopups();
+    updateCamera();
+    render();
+    if (deathTimer >= 50) {
+      showGameOver();
+    } else {
+      rafId = requestAnimationFrame(gameLoop);
+    }
+    return;
+  }
+
   updatePlanets();
   updatePlayer();
   updateObstacles();
   updateParticles();
+  updateScorePopups();
   updateCamera();
   maybeGenerate();
   render();
@@ -719,7 +955,7 @@ function gameLoop() {
   rafId = requestAnimationFrame(gameLoop);
 }
 
-// Menu / game-over background animation (stars only)
+// Menu / game-over background animation
 function bgLoop() {
   const W = canvas.width;
   const H = canvas.height;
@@ -751,12 +987,39 @@ function triggerDeath() {
   if (!player.alive) return;
   player.alive = false;
   finalScore   = score;
-  gameState    = 'gameover';
+  gameState    = 'dying';
+  deathTimer   = 0;
+  shakeFrames  = SHAKE_DURATION;
 
+  // Death explosion
+  deathBurst(player.x + player.w / 2, player.y + player.h / 2);
+
+  // Calculate reward
+  earnedReward = Math.floor(finalScore * REWARD_PER_SCORE);
+  balance += earnedReward;
+
+  // Update high score
+  const isNewHigh = finalScore > highScore;
+  if (isNewHigh) {
+    highScore = finalScore;
+    localStorage.setItem('ph_highScore', String(highScore));
+  }
+}
+
+function showGameOver() {
+  gameState = 'gameover';
   cancelAnimationFrame(rafId);
 
   document.getElementById('finalScore').textContent = finalScore.toLocaleString();
   document.getElementById('goBalance').textContent  = fmtBalance(balance);
+  document.getElementById('goReward').textContent   = `+${earnedReward.toLocaleString()} $STARS`;
+
+  const hsEl = document.getElementById('goHighScore');
+  hsEl.textContent = highScore.toLocaleString();
+  if (finalScore >= highScore) {
+    hsEl.innerHTML = highScore.toLocaleString() + ' <span class="new-hs-badge">NEW!</span>';
+  }
+
   document.getElementById('hud').classList.add('hidden');
   document.getElementById('gameOverScreen').classList.remove('hidden');
 
@@ -780,15 +1043,16 @@ function fmtBalance(n) {
 }
 
 function refreshUI() {
-  document.getElementById('menuBalance').textContent = fmtBalance(balance);
-  document.getElementById('hudBalance').textContent  = fmtBalance(balance);
+  document.getElementById('menuBalance').textContent   = fmtBalance(balance);
+  document.getElementById('hudBalance').textContent    = fmtBalance(balance);
+  document.getElementById('menuHighScore').textContent = highScore.toLocaleString();
 }
 
 // ══════════════════════════════════════════════════════════════
 // KEYBOARD INPUT
 // ══════════════════════════════════════════════════════════════
 window.addEventListener('keydown', function(e) {
-  if (e.code === 'Space' || e.key === ' ') {
+  if (e.code === 'Space' || e.key === ' ' || e.code === 'KeyW' || e.code === 'ArrowUp') {
     e.preventDefault();
     if (gameState === 'playing') jumpQueued = true;
   }
@@ -796,28 +1060,48 @@ window.addEventListener('keydown', function(e) {
     e.preventDefault();
     if (gameState === 'playing') moveRight = true;
   }
+  if (e.code === 'KeyA' || e.code === 'ArrowLeft') {
+    e.preventDefault();
+    if (gameState === 'playing') moveLeft = true;
+  }
 }, { passive: false });
 
 window.addEventListener('keyup', function(e) {
   if (e.code === 'KeyD' || e.code === 'ArrowRight') moveRight = false;
+  if (e.code === 'KeyA' || e.code === 'ArrowLeft')  moveLeft  = false;
 });
 
 // ══════════════════════════════════════════════════════════════
 // TOUCH INPUT
 // ══════════════════════════════════════════════════════════════
 let touchRight = null;
+let touchLeft  = null;
 let touchJump  = null;
 
 canvas.addEventListener('touchstart', function(e) {
   e.preventDefault();
   for (let i = 0; i < e.changedTouches.length; i++) {
     const touch = e.changedTouches[i];
-    if (touch.clientX > canvas.width * 0.5) {
+    if (touch.clientY < canvas.height * 0.4) {
+      // Top area = jump
+      if (touchJump === null) {
+        touchJump = touch.identifier;
+        if (gameState === 'playing') jumpQueued = true;
+      }
+    } else if (touch.clientX > canvas.width * 0.6) {
+      // Right area = move right
       if (touchRight === null) {
         touchRight = touch.identifier;
         if (gameState === 'playing') moveRight = true;
       }
+    } else if (touch.clientX < canvas.width * 0.4) {
+      // Left area = move left
+      if (touchLeft === null) {
+        touchLeft = touch.identifier;
+        if (gameState === 'playing') moveLeft = true;
+      }
     } else {
+      // Middle area = jump
       if (touchJump === null) {
         touchJump = touch.identifier;
         if (gameState === 'playing') jumpQueued = true;
@@ -831,14 +1115,17 @@ canvas.addEventListener('touchend', function(e) {
   for (let i = 0; i < e.changedTouches.length; i++) {
     const touch = e.changedTouches[i];
     if (touch.identifier === touchRight) { touchRight = null; moveRight = false; }
+    if (touch.identifier === touchLeft)  { touchLeft  = null; moveLeft  = false; }
     if (touch.identifier === touchJump)  { touchJump  = null; }
   }
 }, { passive: false });
 
 canvas.addEventListener('touchcancel', function(e) {
   touchRight = null;
+  touchLeft  = null;
   touchJump  = null;
   moveRight  = false;
+  moveLeft   = false;
 }, { passive: false });
 
 // ══════════════════════════════════════════════════════════════
@@ -853,6 +1140,7 @@ document.getElementById('playBtn').addEventListener('click', function() {
   document.getElementById('hud').classList.remove('hidden');
 
   moveRight  = false;
+  moveLeft   = false;
   jumpQueued = false;
 
   initPlanets();
@@ -870,6 +1158,7 @@ document.getElementById('restartBtn').addEventListener('click', function() {
   document.getElementById('hud').classList.remove('hidden');
 
   moveRight  = false;
+  moveLeft   = false;
   jumpQueued = false;
 
   initPlanets();

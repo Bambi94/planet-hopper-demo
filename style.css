@@ -146,6 +146,7 @@ body {
 }
 
 .stat-value.entry { color: var(--purple-light); }
+.stat-value.high  { color: var(--green); }
 
 /* ── Controls hint ── */
 .controls-hint {
@@ -295,6 +296,38 @@ kbd {
   font-size: 19px;
   font-weight: 700;
   color: var(--cyan-light);
+}
+
+.result-value.reward {
+  color: var(--green);
+}
+
+.result-value.high-score-val {
+  color: var(--green);
+}
+
+.reward-row {
+  background: rgba(16, 185, 129, 0.08);
+  border-radius: 8px;
+  padding: 4px 8px;
+  margin: -2px -8px;
+}
+
+/* ── New‐high‐score badge ── */
+.new-hs-badge {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 700;
+  color: #fbbf24;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  margin-left: 6px;
+  animation: pulseBadge 0.8s ease-in-out infinite;
+}
+
+@keyframes pulseBadge {
+  0%,100% { opacity: 1; }
+  50%     { opacity: 0.5; }
 }
 
 /* ── HUD ── */

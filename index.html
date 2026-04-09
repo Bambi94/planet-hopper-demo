@@ -32,14 +32,23 @@
         </div>
       </div>
 
+      <div class="stats-row">
+        <div class="stat-card">
+          <span class="stat-label">High Score</span>
+          <span class="stat-value high" id="menuHighScore">0</span>
+        </div>
+      </div>
+
       <div class="controls-hint">
         <div class="hint-desktop">
-          <span><kbd>SPACE</kbd> Jump</span>
-          <span><kbd>D</kbd> / <kbd>→</kbd> Move right</span>
+          <span><kbd>SPACE</kbd> / <kbd>W</kbd> / <kbd>↑</kbd> Jump</span>
+          <span><kbd>A</kbd> / <kbd>←</kbd> Left</span>
+          <span><kbd>D</kbd> / <kbd>→</kbd> Right</span>
         </div>
         <div class="hint-mobile">
           <span>Tap <strong>right side</strong> → Move right</span>
-          <span>Tap <strong>anywhere else</strong> → Jump</span>
+          <span>Tap <strong>left side</strong> → Move left</span>
+          <span>Tap <strong>top half</strong> → Jump</span>
         </div>
       </div>
 
@@ -71,6 +80,14 @@
         <div class="result-row">
           <span class="result-label">Final Score</span>
           <span class="result-value" id="finalScore">0</span>
+        </div>
+        <div class="result-row">
+          <span class="result-label">High Score</span>
+          <span class="result-value high-score-val" id="goHighScore">0</span>
+        </div>
+        <div class="result-row reward-row">
+          <span class="result-label">Reward Earned</span>
+          <span class="result-value reward" id="goReward">+0 $STARS</span>
         </div>
         <div class="result-row">
           <span class="result-label">Balance</span>
