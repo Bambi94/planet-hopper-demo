@@ -150,7 +150,7 @@ function makePlanet(x, isStart) {
 }
 
 // ══════════════════════════════════════════════════════════════
-// PLANET INITIALISATION
+// PLANET INITIALIZATION
 // ══════════════════════════════════════════════════════════════
 function initPlanets() {
   planets   = [];
