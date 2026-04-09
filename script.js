@@ -34,6 +34,7 @@ let highScore    = parseInt(localStorage.getItem('ph_highScore') || '0', 10);
 let earnedReward = 0;
 let shakeFrames  = 0;
 let deathTimer   = 0;
+let isNewHigh    = false;
 let comboCount   = 0;
 let lastLandedId = null;
 
@@ -999,7 +1000,7 @@ function triggerDeath() {
   balance += earnedReward;
 
   // Update high score
-  const isNewHigh = finalScore > highScore;
+  isNewHigh = finalScore > highScore;
   if (isNewHigh) {
     highScore = finalScore;
     localStorage.setItem('ph_highScore', String(highScore));
@@ -1016,7 +1017,7 @@ function showGameOver() {
 
   const hsEl = document.getElementById('goHighScore');
   hsEl.textContent = highScore.toLocaleString();
-  if (finalScore >= highScore) {
+  if (isNewHigh) {
     hsEl.innerHTML = highScore.toLocaleString() + ' <span class="new-hs-badge">NEW!</span>';
   }
 
